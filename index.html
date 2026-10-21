@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rakugaki_pao BGMジェネレーター</title>
+<title>pao_bgmgenerator</title>
 <style>
   :root { color-scheme: light; --ink:#263238; --muted:#607078; --line:#dbe4e7; --panel:#fff; --bg:#f5f8f8; --accent:#397b78; --accent2:#e6f3ef; }
   * { box-sizing:border-box; }
@@ -42,8 +42,8 @@
 </head>
 <body>
 <main>
-  <h1>rakugaki_pao BGMジェネレーター</h1>
-  <p class="sub">短い旋律とコードを組み合わせて、rakugaki_paoタイムラプス動画用のBGMを生成します。外部音源・ライブラリは使わず、Web Audio APIで合成します。</p>
+  <h1>pao_bgmgenerator</h1>
+  <p class="sub">短い旋律とコードを組み合わせて、タイムラプス用のBGMを生成します。外部音源・ライブラリは使わず、Web Audio APIで合成します。</p>
 
   <div class="layout">
     <section>
@@ -122,7 +122,30 @@
 
     <aside>
       <div class="card">
+        <h2>動画を読み込む</h2>
+        <div class="field">
+          <label class="legend" for="videoFile">タイムラプス動画（MP4など）</label>
+          <input id="videoFile" type="file" accept="video/*" style="width:100%;font:inherit" />
+        </div>
+        <video id="videoPreview" controls playsinline preload="metadata" style="display:block;width:100%;max-height:360px;background:#202728;border-radius:10px" hidden></video>
+        <p class="small" id="videoInfo">動画を読み込むと、尺に合わせて曲の設定を自動調整します。</p>
+        <div class="buttons">
+          <button class="primary" id="syncPlay" disabled>▶ 動画＋BGMを再生</button>
+          <button id="syncStop" disabled>■ 停止</button>
+        </div>
+        <div class="buttons" style="margin-top:8px">
+          <button id="recordExport" disabled>● 音楽付き動画を保存</button>
+        </div>
+        <div class="status" id="videoStatus" role="status">まず動画ファイルを選択してください。</div>
+        <p class="small">元動画の音声はミュートし、生成したBGMだけを合成します。録画中はこのタブを前面にしておいてください。</p>
+      </div>
+      <div class="card">
         <h2>動画と音楽の同期</h2>
+        <div class="field">
+          <label class="legend" for="leadIn">BGM冒頭の無音時間（秒）</label>
+          <input id="leadIn" type="number" min="0" max="3" step="0.1" value="1.0">
+          <p class="small">0.1秒単位で調整できます（0〜3秒）。プレビュー・WAV・動画書き出しに反映されます。</p>
+        </div>
         <!-- <p>冒頭は完成絵、中央は描画タイムラプス、最後は完成絵の再表示という構成に合わせます。</p> -->
         <div class="stats">
           <div class="stat"><span class="small">動画尺</span><strong id="vlen">15</strong><span class="small">秒</span></div>
@@ -219,6 +242,8 @@
     Em: {label:"Eマイナー", mode:"minor", shift:7, progression:["Am7","Fmaj7","Cmaj7","G7","Dm7","E7","E7sus4"], final:"Amadd9", finalLabel:"Em(add9)", cadence:[68,69], dominant:"E7", scale:[0,2,4,5,7,9,11]}
   };
   let current = null, audioCtx = null, liveNodes = [], stopTimer = null, isPlaying = false;
+  let videoObjectUrl = null, videoSyncCtx = null, videoSyncTimer = null, mediaRecorder = null, recordingChunks = [];
+  let syncDestination = null, activeCaptureStream = null;
 
   function mulberry32(seed) {
     let a = seed >>> 0;
@@ -411,34 +436,47 @@
     osc.start(t); osc.stop(t+dur+.02);
     return [osc,gain];
   }
-  function scheduleSong(ctx, song, startAt, destination) {
+  function getLeadIn() {
+    const value=Number($("leadIn")?.value);
+    return Number.isFinite(value) ? Math.max(0,Math.min(3,Math.round(value*10)/10)) : 1;
+  }
+  function scheduleSong(ctx, song, startAt, destination, monitorDestination=null) {
     const cfg=song.cfg;
     const master=ctx.createGain(); master.gain.value=.78; master.connect(destination);
+    // During video export, send the same generated BGM to the recording stream and speakers.
+    if(monitorDestination && monitorDestination!==destination) master.connect(monitorDestination);
     const dry=ctx.createGain(); dry.gain.value=1; dry.connect(master);
     const delay=ctx.createDelay(0.4); delay.delayTime.value=.105;
     const fb=ctx.createGain();fb.gain.value=cfg.reverb*.45;
     const wet=ctx.createGain();wet.gain.value=cfg.reverb;
     delay.connect(fb);fb.connect(delay);delay.connect(wet);wet.connect(master);
     const voices=[];
+    // Keep the drawing cadence and final chord aligned by compressing the drawing
+    // section to compensate for the configurable lead-in silence.
+    const leadIn=getLeadIn();
+    const drawingScale=(song.drawEnd-leadIn)/song.drawEnd;
     for(const e of song.events){
-      const t=startAt+e.t, dur=Math.max(.06,e.dur);
-      if(e.type==="chord" || e.type==="final"){
+      const isFinal=e.type==="final";
+      const eventT=isFinal ? e.t : leadIn + e.t*drawingScale;
+      const dur=Math.max(.06, e.dur*(isFinal?1:drawingScale));
+      const t=startAt+eventT;
+      if(e.type==="chord" || isFinal){
         const notes=e.notes;
         notes.forEach((n,i)=>{
-          const noteDur=e.type==="final"?Math.min(dur, song.duration-e.t):Math.min(dur, song.drawEnd-e.t);
+          const noteDur=isFinal?Math.min(dur, song.duration-e.t):Math.min(dur, song.drawEnd-eventT);
           if(noteDur<=0)return;
           const pan=(i-(notes.length-1)/2)*.12;
           voices.push(...createVoice(ctx,dry,midiHz(n),t,noteDur,cfg.wave,
-            (e.type==="final"?.075:.040)*e.vel, e.type==="final"?.52:.28,pan));
+            (isFinal?.075:.040)*e.vel, isFinal?.52:.28,pan));
           // Quiet delayed copy adds a small synthetic room impression.
           const send=ctx.createGain();send.gain.value=cfg.reverb*.32;
           // keep the send graph simple; it shares the oscillator voice via a parallel path in createVoice only on main dry bus
         });
       } else if(e.type==="bass"){
-        voices.push(...createVoice(ctx,dry,midiHz(e.note),t,Math.min(dur,song.drawEnd-e.t),"sine",.065*e.vel,.35,0));
+        voices.push(...createVoice(ctx,dry,midiHz(e.note),t,Math.min(dur,Math.max(.06,song.drawEnd-eventT)),"sine",.065*e.vel,.35,0));
       } else if(e.type==="melody"){
         const peak=cfg.melodyVol*.18*e.vel;
-        voices.push(...createVoice(ctx,dry,midiHz(e.note),t,Math.min(dur,.7),cfg.melodyWave,peak,cfg.decay,(e.note%2?-.12:.12)));
+        voices.push(...createVoice(ctx,dry,midiHz(e.note),t,Math.min(dur,.7*drawingScale),cfg.melodyWave,peak,cfg.decay,(e.note%2?-.12:.12)));
       }
     }
     return {master,voices};
@@ -467,6 +505,165 @@
     $("status").textContent="再生中…";
     stopTimer=setTimeout(()=>{isPlaying=false;$("play").disabled=false;$("stop").disabled=true;$("status").textContent="再生が終了しました。";ctx.close().catch(()=>{});audioCtx=null;},current.duration*1000+250);
   }
+  function setVideoStatus(message) { $("videoStatus").textContent = message; }
+  function nearestDuration(seconds) {
+    return [15,30,60].reduce((best,n)=>Math.abs(n-seconds)<Math.abs(best-seconds)?n:best,15);
+  }
+  function chooseRecordingMimeType() {
+    const candidates = [
+      'video/mp4;codecs="avc1.42E01E,mp4a.40.2"', 'video/mp4',
+      'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'
+    ];
+    return candidates.find(type => window.MediaRecorder && MediaRecorder.isTypeSupported(type)) || '';
+  }
+  function stopSyncedPlayback(message="動画とBGMを停止しました。") {
+    clearTimeout(videoSyncTimer); videoSyncTimer=null;
+    try { if($("videoPreview") && !$("videoPreview").paused) $("videoPreview").pause(); } catch(e) {}
+    if(videoSyncCtx) { videoSyncCtx.close().catch(()=>{}); videoSyncCtx=null; }
+    syncDestination=null; isPlaying=false;
+    $("syncPlay").disabled=!$("videoPreview").src; $("syncStop").disabled=true;
+    if(message) setVideoStatus(message);
+  }
+  async function playVideoAndSong() {
+    const video=$("videoPreview"); if(!video.src || !current) return;
+    stopSyncedPlayback("");
+    try {
+      video.muted=true; video.currentTime=0;
+      const Ctx=window.AudioContext||window.webkitAudioContext;
+      if(!Ctx) throw new Error("このブラウザーはWeb Audio APIに対応していません。");
+      videoSyncCtx=new Ctx(); await videoSyncCtx.resume();
+      const start=videoSyncCtx.currentTime+.12;
+      scheduleSong(videoSyncCtx,current,start,videoSyncCtx.destination);
+      await video.play();
+      isPlaying=true; $("syncPlay").disabled=true; $("syncStop").disabled=false;
+      setVideoStatus("動画とBGMを同期再生中です。");
+      videoSyncTimer=setTimeout(()=>stopSyncedPlayback("再生が終了しました。"),Math.max(1000,Math.min(video.duration||current.duration,current.duration)*1000+500));
+    } catch(err) { stopSyncedPlayback("同期再生に失敗しました："+err.message); }
+  }
+  async function recordVideoWithSong() {
+    const video=$("videoPreview");
+    if(!video.src || !current) { setVideoStatus("先に動画ファイルを読み込んでください。"); return; }
+    if(!window.MediaRecorder) { setVideoStatus("このブラウザーはMediaRecorderに対応していません。Chrome / Edgeの最新版をお試しください。"); return; }
+    const mimeType=chooseRecordingMimeType();
+    if(mimeType && !MediaRecorder.isTypeSupported(mimeType)) { setVideoStatus("このブラウザーで利用できる録画形式が見つかりません。"); return; }
+    let drawFrameId=null, finishTimer=null, finished=false;
+    const cleanupRecording=()=>{
+      if(drawFrameId!==null) cancelAnimationFrame(drawFrameId);
+      if(finishTimer!==null) clearTimeout(finishTimer);
+      video.removeEventListener("ended",finish);
+    };
+    const finish=()=>{
+      if(finished) return;
+      finished=true; cleanupRecording();
+      if(mediaRecorder && mediaRecorder.state!=="inactive") {
+        try { mediaRecorder.stop(); } catch(e) { setVideoStatus("録画停止に失敗しました："+e.message); }
+      }
+    };
+    try {
+      setVideoStatus("書き出しの準備中です…");
+      stopSyncedPlayback("");
+      video.pause(); video.muted=true;
+      // Wait for the seek back to zero to complete before starting the capture.
+      if(video.readyState<2) {
+        await new Promise((resolve,reject)=>{
+          const onReady=()=>{cleanup();resolve();}, onError=()=>{cleanup();reject(new Error("動画を読み込めませんでした。"));};
+          const cleanup=()=>{video.removeEventListener("loadeddata",onReady);video.removeEventListener("error",onError);};
+          video.addEventListener("loadeddata",onReady,{once:true}); video.addEventListener("error",onError,{once:true});
+        });
+      }
+      if(video.currentTime!==0) {
+        await new Promise((resolve,reject)=>{
+          const onSeeked=()=>{cleanup();resolve();}, onError=()=>{cleanup();reject(new Error("動画の先頭へ移動できませんでした。"));};
+          const cleanup=()=>{video.removeEventListener("seeked",onSeeked);video.removeEventListener("error",onError);};
+          video.addEventListener("seeked",onSeeked,{once:true}); video.addEventListener("error",onError,{once:true});
+          video.currentTime=0;
+        });
+      }
+      const Ctx=window.AudioContext||window.webkitAudioContext;
+      if(!Ctx) throw new Error("このブラウザーはWeb Audio APIに対応していません。");
+      videoSyncCtx=new Ctx(); await videoSyncCtx.resume();
+      syncDestination=videoSyncCtx.createMediaStreamDestination();
+      // Record the BGM and also monitor it through the speakers while exporting.
+      scheduleSong(videoSyncCtx,current,videoSyncCtx.currentTime+.08,syncDestination,videoSyncCtx.destination);
+
+      // Capture a canvas rather than the video element directly. This is more reliable in browsers
+      // where captureStream() on a paused local video initially exposes no video track.
+      const canvas=document.createElement("canvas");
+      canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
+      const canvasCtx=canvas.getContext("2d");
+      if(!canvasCtx) throw new Error("動画プレビュー用キャンバスを作成できませんでした。");
+      const drawFrame=()=>{
+        if(video.readyState>=2) {
+          try { canvasCtx.drawImage(video,0,0,canvas.width,canvas.height); } catch(e) {}
+        }
+        if(!finished) drawFrameId=requestAnimationFrame(drawFrame);
+      };
+      drawFrame();
+      const canvasStream=canvas.captureStream ? canvas.captureStream(30) : null;
+      if(!canvasStream || !canvasStream.getVideoTracks().length) throw new Error("このブラウザーではcanvas.captureStreamに対応していません。Chrome / Edgeの最新版をお試しください。");
+      activeCaptureStream=new MediaStream([...canvasStream.getVideoTracks(), ...syncDestination.stream.getAudioTracks()]);
+      recordingChunks=[];
+      mediaRecorder=new MediaRecorder(activeCaptureStream,mimeType?{mimeType}:undefined);
+      mediaRecorder.ondataavailable=e=>{if(e.data&&e.data.size) recordingChunks.push(e.data);};
+      mediaRecorder.onerror=e=>setVideoStatus("録画エラー："+(e.error?.message||"不明なエラー"));
+      mediaRecorder.onstop=()=>{
+        cleanupRecording();
+        const recorder=mediaRecorder;
+        const type=recorder?.mimeType||mimeType||recordingChunks[0]?.type||"video/webm";
+        const blob=new Blob(recordingChunks,{type});
+        activeCaptureStream?.getTracks().forEach(t=>t.stop()); activeCaptureStream=null;
+        if(videoSyncCtx) { videoSyncCtx.close().catch(()=>{}); videoSyncCtx=null; }
+        syncDestination=null; mediaRecorder=null; recordingChunks=[];
+        $("recordExport").disabled=false; $("syncPlay").disabled=!video.src; $("syncStop").disabled=true;
+        if(!blob.size) { setVideoStatus("録画データが空でした。動画を再読み込みして、もう一度お試しください。"); return; }
+        const ext=type.includes("mp4")?"mp4":type.includes("webm")?"webm":"webm";
+        const url=URL.createObjectURL(blob); const a=document.createElement("a");
+        a.href=url; a.download=`timelapse-with-bgm-${current.duration}s.${ext}`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),60000);
+        setVideoStatus(`書き出しました（${ext.toUpperCase()}形式、${(blob.size/1024/1024).toFixed(1)} MB）。ダウンロードフォルダーを確認してください。`);
+      };
+      mediaRecorder.start(250);
+      await video.play();
+      $("recordExport").disabled=true; $("syncPlay").disabled=true; $("syncStop").disabled=false;
+      setVideoStatus("録画中です。動画の最後まで再生すると自動で保存します…");
+      video.addEventListener("ended",finish,{once:true});
+      finishTimer=setTimeout(finish,Math.max(1000,(video.duration||current.duration)*1000+1800));
+    } catch(err) {
+      cleanupRecording();
+      if(mediaRecorder && mediaRecorder.state!=="inactive") { try{mediaRecorder.stop();}catch(e){} }
+      activeCaptureStream?.getTracks().forEach(t=>t.stop()); activeCaptureStream=null;
+      if(videoSyncCtx) { videoSyncCtx.close().catch(()=>{}); videoSyncCtx=null; }
+      syncDestination=null;
+      $("recordExport").disabled=false; $("syncPlay").disabled=!video.src; $("syncStop").disabled=true;
+      setVideoStatus("動画の書き出しに失敗しました："+err.message);
+    }
+  }
+  function loadVideoFile(file) {
+    if(!file) return;
+    if(!file.type.startsWith("video/")) { setVideoStatus("動画ファイルを選択してください。"); return; }
+    stopSyncedPlayback("");
+    if(videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+    videoObjectUrl=URL.createObjectURL(file);
+    const video=$("videoPreview"); video.src=videoObjectUrl; video.hidden=false; video.muted=true;
+    video.onloadedmetadata=()=>{
+      const seconds=video.duration;
+      if(!Number.isFinite(seconds)||seconds<=0) { setVideoStatus("動画の長さを取得できませんでした。"); return; }
+      const target=nearestDuration(seconds);
+      $("duration").value=String(target);
+      // Default silence aligns the start of the music with the video duration:
+      // video duration - selected music duration + 1 second.
+      const defaultLeadIn=Math.max(0,Math.min(3,Math.round((seconds-target+1)*100)/100));
+      $("leadIn").value=defaultLeadIn.toFixed(2);
+      generate();
+      $("syncPlay").disabled=false; $("recordExport").disabled=false;
+      $("videoInfo").textContent=`${file.name} — ${seconds.toFixed(2)}秒。曲の設定を${target}秒に自動調整しました。`;
+      const mime=chooseRecordingMimeType();
+      setVideoStatus(`動画を読み込みました。書き出し形式：${mime.includes("mp4")?"MP4":"WebM（このブラウザーのMediaRecorder対応形式）"}。元動画の音声は使用しません。`);
+    };
+    video.onerror=()=>setVideoStatus("動画を読み込めませんでした。MP4 / WebMなどの動画ファイルか確認してください。");
+  }
+
   function makeRngSeed() {
     const n=Number($("seed").value);
     return Number.isFinite(n)?(Math.trunc(n)>>>0):1;
@@ -520,9 +717,29 @@
     } finally { $("wav").disabled=false; }
   }
 
+  // Shuffle musical choices and seed on every page load.
+  function randomOption(select) {
+    const options=Array.from(select.options);
+    if(!options.length) return;
+    select.selectedIndex=Math.floor(Math.random()*options.length);
+  }
+  randomOption($("mood"));
+  randomOption($("character"));
+  randomOption($("key"));
+  $("seed").value=String(Math.floor(Math.random()*2147483646)+1);
+
   $("play").addEventListener("click",playSong);
   $("stop").addEventListener("click",stopPlayback);
   $("wav").addEventListener("click",exportWav);
+  $("videoFile").addEventListener("change",e=>loadVideoFile(e.target.files?.[0]));
+  $("syncPlay").addEventListener("click",playVideoAndSong);
+  $("syncStop").addEventListener("click",()=>{
+    if(mediaRecorder && mediaRecorder.state!=="inactive") { try{mediaRecorder.stop();}catch(e){} }
+    clearTimeout(videoSyncTimer); videoSyncTimer=null; stopSyncedPlayback("停止しました。");
+    $("recordExport").disabled=!$("videoPreview").src;
+  });
+  $("recordExport").addEventListener("click",recordVideoWithSong);
+  $("videoPreview").addEventListener("ended",()=>{if(isPlaying)stopSyncedPlayback("動画とBGMの再生が終了しました。");});
   $("mood").addEventListener("change",()=>{ if(current)generate(); });
   $("duration").addEventListener("change",()=>{ if(current)generate(); });
   $("key").addEventListener("change",()=>{ if(current)generate(); });
