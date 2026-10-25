@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pao_bgmgenerator</title>
 <style>
-  :root { color-scheme: light; --ink:#263238; --muted:#607078; --line:#dbe4e7; --panel:#fff; --bg:#f5f8f8; --accent:#397b78; --accent2:#e6f3ef; }
+  :root { color-scheme: light; --ink:#282c37; --muted:#606984; --line:#d9dce8; --panel:#fff; --bg:#f6f6fb; --surface:#f0f0f8; --accent:#6364f1; --accent-hover:#5253d8; --accent2:#efefff; --focus:#a5a6ff; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
   main { max-width:920px; margin:0 auto; padding:24px 16px 48px; }
@@ -14,25 +14,28 @@
   p { margin:6px 0 12px; }
   .sub { color:var(--muted); margin-bottom:22px; }
   .layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr); gap:16px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:16px; box-shadow:0 2px 8px #213b4410; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:16px; box-shadow:0 2px 8px #282c3710; }
   .field { margin:14px 0; }
   label.legend { display:block; font-weight:650; margin-bottom:7px; }
-  select,input[type=number] { width:100%; border:1px solid #bfcdd1; border-radius:9px; padding:10px 11px; font:inherit; background:white; color:inherit; }
+  select,input[type=number] { width:100%; border:1px solid var(--line); border-radius:9px; padding:10px 11px; font:inherit; background:var(--panel); color:inherit; }
   .row { display:flex; gap:10px; align-items:center; }
   .row > * { flex:1; min-width:0; }
-  button { border:1px solid #b6c9c9; background:white; color:var(--ink); border-radius:10px; padding:10px 13px; font:inherit; font-weight:650; cursor:pointer; }
+  button { border:1px solid var(--line); background:var(--panel); color:var(--ink); border-radius:10px; padding:10px 13px; font:inherit; font-weight:650; cursor:pointer; }
+  button:hover:not(:disabled) { background:var(--accent2); border-color:var(--focus); }
   button.primary { background:var(--accent); border-color:var(--accent); color:white; }
+  button.primary:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover); }
   button:disabled { opacity:.45; cursor:not-allowed; }
+  :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
   .buttons { display:flex; flex-wrap:wrap; gap:8px; }
   .buttons button { flex:1; min-width:120px; }
   .small { color:var(--muted); font-size:.88rem; }
-  .pill { display:inline-block; background:var(--accent2); color:#245c56; border-radius:999px; padding:3px 9px; font-size:.8rem; font-weight:700; }
-  canvas { width:100%; height:150px; display:block; border:1px solid var(--line); border-radius:10px; background:#fbfdfd; }
+  .pill { display:inline-block; background:var(--accent2); color:var(--accent-hover); border-radius:999px; padding:3px 9px; font-size:.8rem; font-weight:700; }
+  canvas { width:100%; height:150px; display:block; border:1px solid var(--line); border-radius:10px; background:#fbfbfe; }
   .status { min-height:1.5em; color:var(--muted); font-size:.9rem; margin-top:9px; }
   .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
-  .stat { background:#f4f8f7; border-radius:10px; padding:10px; }
+  .stat { background:var(--surface); border-radius:10px; padding:10px; }
   .stat strong { display:block; font-size:1.15rem; }
-  .events { max-height:230px; overflow:auto; font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; background:#f7f9f9; border-radius:8px; padding:10px; white-space:pre-wrap; }
+  .events { max-height:230px; overflow:auto; font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; background:#f7f7fc; border-radius:8px; padding:10px; white-space:pre-wrap; }
   details { margin-top:12px; }
   summary { cursor:pointer; font-weight:650; }
   .warning { border-left:3px solid #d8a84b; padding:8px 11px; background:#fff9e9; color:#655020; border-radius:4px; font-size:.9rem; }
@@ -242,7 +245,7 @@
     Em: {label:"Eマイナー", mode:"minor", shift:7, progression:["Am7","Fmaj7","Cmaj7","G7","Dm7","E7","E7sus4"], final:"Amadd9", finalLabel:"Em(add9)", cadence:[68,69], dominant:"E7", scale:[0,2,4,5,7,9,11]}
   };
   let current = null, audioCtx = null, liveNodes = [], stopTimer = null, isPlaying = false;
-  let videoObjectUrl = null, videoSyncCtx = null, videoSyncTimer = null, mediaRecorder = null, recordingChunks = [];
+  let videoObjectUrl = null, videoFileBaseName = "video", videoSyncCtx = null, videoSyncTimer = null, mediaRecorder = null, recordingChunks = [];
   let syncDestination = null, activeCaptureStream = null;
 
   function mulberry32(seed) {
@@ -385,10 +388,10 @@
   function renderVisual(song) {
     const c=$("wave"), ctx=c.getContext("2d"), w=c.width,h=c.height;
     ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle="#e4ebed"; ctx.lineWidth=1;
+    ctx.strokeStyle="#e2e3ed"; ctx.lineWidth=1;
     for(let i=0;i<=10;i++){const x=i*w/10;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
     for(let i=0;i<=4;i++){const y=20+i*(h-40)/4;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-    const colors={melody:"#397b78",chord:"#8bb9b0",bass:"#d6a75c",final:"#b48ac2"};
+    const colors={melody:"#6364f1",chord:"#b9baff",bass:"#d6a75c",final:"#9697f5"};
     for(const e of song.events){
       if(e.type==="melody"){
         const x=e.t/song.duration*w, y=h-18-(e.note-48)/(84-48)*(h-36);
@@ -396,8 +399,8 @@
       }
     }
     ctx.fillStyle="#f5e8cf";ctx.fillRect(song.drawEnd/song.duration*w,0,2,h);
-    ctx.fillStyle="#b48ac2";ctx.fillRect(song.finalStart/song.duration*w,0,2,h);
-    ctx.fillStyle="#607078";ctx.font="12px system-ui";ctx.fillText("0s",4,h-5);
+    ctx.fillStyle="#9697f5";ctx.fillRect(song.finalStart/song.duration*w,0,2,h);
+    ctx.fillStyle="#606984";ctx.font="12px system-ui";ctx.fillText("0s",4,h-5);
     ctx.fillText(song.drawEnd.toFixed(1)+"s",song.drawEnd/song.duration*w+5,14);
     ctx.fillText(song.duration+"s",w-35,h-5);
   }
@@ -550,6 +553,7 @@
   async function recordVideoWithSong() {
     const video=$("videoPreview");
     if(!video.src || !current) { setVideoStatus("先に動画ファイルを読み込んでください。"); return; }
+    const exportSong=current, sourceName=videoFileBaseName;
     if(!window.MediaRecorder) { setVideoStatus("このブラウザーはMediaRecorderに対応していません。Chrome / Edgeの最新版をお試しください。"); return; }
     const mimeType=chooseRecordingMimeType();
     if(mimeType && !MediaRecorder.isTypeSupported(mimeType)) { setVideoStatus("このブラウザーで利用できる録画形式が見つかりません。"); return; }
@@ -591,7 +595,7 @@
       videoSyncCtx=new Ctx(); await videoSyncCtx.resume();
       syncDestination=videoSyncCtx.createMediaStreamDestination();
       // Record the BGM and also monitor it through the speakers while exporting.
-      scheduleSong(videoSyncCtx,current,videoSyncCtx.currentTime+.08,syncDestination,videoSyncCtx.destination);
+      scheduleSong(videoSyncCtx,exportSong,videoSyncCtx.currentTime+.08,syncDestination,videoSyncCtx.destination);
 
       // Capture a canvas rather than the video element directly. This is more reliable in browsers
       // where captureStream() on a paused local video initially exposes no video track.
@@ -625,7 +629,7 @@
         if(!blob.size) { setVideoStatus("録画データが空でした。動画を再読み込みして、もう一度お試しください。"); return; }
         const ext=type.includes("mp4")?"mp4":type.includes("webm")?"webm":"webm";
         const url=URL.createObjectURL(blob); const a=document.createElement("a");
-        a.href=url; a.download=`timelapse-with-bgm-${current.duration}s.${ext}`;
+        a.href=url; a.download=`${sourceName}_${exportSong.mood}-${exportSong.character}-${exportSong.key}-${exportSong.duration}s-${exportSong.seed}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(()=>URL.revokeObjectURL(url),60000);
         setVideoStatus(`書き出しました（${ext.toUpperCase()}形式、${(blob.size/1024/1024).toFixed(1)} MB）。ダウンロードフォルダーを確認してください。`);
@@ -649,6 +653,9 @@
   function loadVideoFile(file) {
     if(!file) return;
     if(!file.type.startsWith("video/")) { setVideoStatus("動画ファイルを選択してください。"); return; }
+    const extensionIndex=file.name.lastIndexOf(".");
+    const baseName=extensionIndex>0?file.name.slice(0,extensionIndex):file.name;
+    videoFileBaseName=baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g,"_").replace(/[. ]+$/,"")||"video";
     stopSyncedPlayback("");
     if(videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
     videoObjectUrl=URL.createObjectURL(file);
