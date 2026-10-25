@@ -442,9 +442,16 @@
   }
   function scheduleSong(ctx, song, startAt, destination, monitorDestination=null) {
     const cfg=song.cfg;
-    const master=ctx.createGain(); master.gain.value=.78; master.connect(destination);
+    const master=ctx.createGain(); master.gain.value=1.5;
+    const compressor=ctx.createDynamicsCompressor();
+    compressor.threshold.value=-12;
+    compressor.knee.value=6;
+    compressor.ratio.value=6;
+    compressor.attack.value=.003;
+    compressor.release.value=.15;
+    master.connect(compressor); compressor.connect(destination);
     // During video export, send the same generated BGM to the recording stream and speakers.
-    if(monitorDestination && monitorDestination!==destination) master.connect(monitorDestination);
+    if(monitorDestination && monitorDestination!==destination) compressor.connect(monitorDestination);
     const dry=ctx.createGain(); dry.gain.value=1; dry.connect(master);
     const delay=ctx.createDelay(0.4); delay.delayTime.value=.105;
     const fb=ctx.createGain();fb.gain.value=cfg.reverb*.45;
